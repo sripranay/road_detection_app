@@ -2,7 +2,9 @@ streamlit
 streamlit-webrtc
 opencv-python-headless
 ultralytics
+av
 numpy
 torch
 torchvision
-av
+# Fix for cv2 "libGL.so.1" error
+pygobject
