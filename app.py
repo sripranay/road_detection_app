@@ -3,94 +3,92 @@ import cv2
 import tempfile
 import numpy as np
 from ultralytics import YOLO
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
-# -------------------------------
-# Load models
-# -------------------------------
-road_model = YOLO("models/best.pt")        # custom model for road damages, speed breakers
-vehicle_model = YOLO("models/yolov8s.pt")  # pretrained YOLOv8s for vehicles, people
+# Load both models
+road_model = YOLO("models/best.pt")         # road damages/speed breakers
+vehicle_model = YOLO("models/yolov8s.pt")   # vehicles + humans
 
-# -------------------------------
-# UI Setup
-# -------------------------------
 st.set_page_config(page_title="Road Detection App", layout="wide")
 st.title("🚦 Road Detection with Live Camera & Uploads")
 
-option = st.sidebar.radio("Choose Input Mode", ["Upload Image", "Upload Video", "Live Camera"])
+# ----- Image Upload -----
+uploaded_img = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png"])
+if uploaded_img:
+    bytes_data = uploaded_img.read()
+    img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-# -------------------------------
-# Helper Function: Draw Results
-# -------------------------------
-def process_and_draw(image):
-    results_road = road_model(image)
-    results_vehicle = vehicle_model(image)
+    results1 = road_model(img)
+    results2 = vehicle_model(img)
 
-    # Combine both results
-    annotated = results_road[0].plot()
-    annotated = results_vehicle[0].plot(annotated)
+    combined = img.copy()
+    for r in results1 + results2:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cls = r.names[int(box.cls[0])]
+            cv2.rectangle(combined, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(combined, cls, (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    return annotated
+    st.image(combined, channels="BGR", use_container_width=True)
 
-# -------------------------------
-# Upload Image
-# -------------------------------
-if option == "Upload Image":
-    uploaded_image = st.file_uploader("Upload an Image", type=["jpg", "png", "jpeg"])
-    if uploaded_image:
-        file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, 1)
+# ----- Video Upload -----
+uploaded_video = st.file_uploader("Upload a Video", type=["mp4", "avi", "mov"])
+if uploaded_video:
+    tfile = tempfile.NamedTemporaryFile(delete=False)
+    tfile.write(uploaded_video.read())
 
-        st.image(img, channels="BGR", caption="Uploaded Image", use_container_width=True)
+    cap = cv2.VideoCapture(tfile.name)
+    stframe = st.empty()
 
-        if st.button("Run Detection"):
-            output = process_and_draw(img)
-            st.image(output, channels="BGR", caption="Detections", use_container_width=True)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-# -------------------------------
-# Upload Video
-# -------------------------------
-elif option == "Upload Video":
-    uploaded_video = st.file_uploader("Upload a Video", type=["mp4", "avi", "mov"])
-    if uploaded_video:
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(uploaded_video.read())
-        cap = cv2.VideoCapture(tfile.name)
+        results1 = road_model(frame)
+        results2 = vehicle_model(frame)
 
-        stframe = st.empty()
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+        combined = frame.copy()
+        for r in results1 + results2:
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cls = r.names[int(box.cls[0])]
+                cv2.rectangle(combined, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(combined, cls, (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            output = process_and_draw(frame)
-            stframe.image(output, channels="BGR", use_container_width=True)
+        stframe.image(combined, channels="BGR", use_container_width=True)
 
-        cap.release()
+    cap.release()
 
-# -------------------------------
-# Live Camera
-# -------------------------------
-elif option == "Live Camera":
+# ----- Live Camera -----
+st.subheader("Live Camera Detection")
 
-    class VideoProcessor:
-        def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            output = process_and_draw(img)
-            return av.VideoFrame.from_ndarray(output, format="bgr24")
+def video_frame_callback(frame):
+    img = frame.to_ndarray(format="bgr24")
+    results1 = road_model(img)
+    results2 = vehicle_model(img)
 
-    RTC_CONFIGURATION = {
-        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    combined = img.copy()
+    for r in results1 + results2:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cls = r.names[int(box.cls[0])]
+            cv2.rectangle(combined, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(combined, cls, (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+    return combined
+
+webrtc_streamer(
+    key="road-detection",
+    mode=WebRtcMode.SENDRECV,
+    video_frame_callback=video_frame_callback,
+    async_transform=True,
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+    media_stream_constraints={
+        "video": {"width": {"ideal": 320}, "height": {"ideal": 240}},  # Lower res for phone
+        "audio": False
     }
-
-    webrtc_streamer(
-        key="road-live",
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={
-            "video": {"facingMode": {"exact": "environment"}},  # 👈 back camera on phones
-            "audio": False,
-        },
-        video_processor_factory=VideoProcessor,
-    )
+)
